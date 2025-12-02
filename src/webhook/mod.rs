@@ -1,5 +1,6 @@
 use crate::{
-    build::{Workflow, WorkflowStatus},
+    build::{BuildStatus, Workflow, WorkflowStatus},
+    cache::CacheClient,
     nix::NixEvaluator,
 };
 use axum::{
@@ -327,14 +328,45 @@ async fn process_workflow(
         workflow_id
     );
 
-    // Add jobs to the build queue
+    // Check cache and add jobs to the build queue
+    let cache_client = CacheClient::new(app_state.cache_config.clone());
+    let mut jobs_queued = 0;
+    let mut jobs_cached = 0;
+
     {
         let mut queue = app_state.build_queue.lock().await;
-        for derivation in derivations {
-            queue.add_job(derivation, workflow_id.to_string());
+        for mut derivation in derivations {
+            // Check if derivation outputs are already cached
+            match cache_client.derivation_cached(&derivation.outputs).await {
+                Ok(true) => {
+                    info!("Skipping cached derivation: {}", derivation.name);
+                    jobs_cached += 1;
+                    // Still add to queue but mark as cached
+                    derivation.status = BuildStatus::Cached;
+                    queue.add_job(derivation, workflow_id.to_string());
+                }
+                Ok(false) => {
+                    info!("Queueing derivation for build: {}", derivation.name);
+                    jobs_queued += 1;
+                    queue.add_job(derivation, workflow_id.to_string());
+                }
+                Err(e) => {
+                    warn!("Failed to check cache for {}: {}", derivation.name, e);
+                    // Queue the job anyway if cache check fails
+                    info!(
+                        "Queueing derivation due to cache check failure: {}",
+                        derivation.name
+                    );
+                    jobs_queued += 1;
+                    queue.add_job(derivation, workflow_id.to_string());
+                }
+            }
         }
     }
 
-    info!("Successfully queued jobs for workflow {}", workflow_id);
+    info!(
+        "Workflow {} processed: {} jobs queued, {} jobs cached",
+        workflow_id, jobs_queued, jobs_cached
+    );
     Ok(())
 }

@@ -9,10 +9,12 @@ use tracing::{info, Level};
 use tracing_subscriber;
 
 mod build;
+mod cache;
 mod nix;
 mod webhook;
 
 use build::BuildQueue;
+use cache::CacheConfig;
 use webhook::WebhookConfig;
 
 #[derive(Debug)]
@@ -20,6 +22,7 @@ pub struct AppState {
     pub build_queue: Mutex<BuildQueue>,
     pub workflow_counter: AtomicU64,
     pub webhook_config: WebhookConfig,
+    pub cache_config: CacheConfig,
 }
 
 #[tokio::main]
@@ -32,6 +35,12 @@ async fn main() -> anyhow::Result<()> {
         workflow_counter: AtomicU64::new(0),
         webhook_config: WebhookConfig {
             secret: std::env::var("GITHUB_WEBHOOK_SECRET").ok(),
+        },
+        cache_config: CacheConfig {
+            cache_url: std::env::var("CACHE_URL")
+                .unwrap_or_else(|_| "https://app.attic.rs/cache".to_string()),
+            attic_cache_name: std::env::var("ATTIC_CACHE_NAME")
+                .unwrap_or_else(|_| "icicle".to_string()),
         },
     });
 

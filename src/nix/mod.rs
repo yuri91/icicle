@@ -1,4 +1,4 @@
-use crate::build::Derivation;
+use crate::build::{BuildStatus, Derivation};
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -177,6 +177,7 @@ impl NixEvaluator {
                 outputs,
                 system: job.system.clone(),
                 input_drvs: Vec::new(), // Will be filled in later
+                status: BuildStatus::Queued,
             };
 
             derivations.push(derivation);

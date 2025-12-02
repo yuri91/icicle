@@ -1,3 +1,7 @@
+use crate::{
+    build::{Workflow, WorkflowStatus},
+    nix::NixEvaluator,
+};
 use axum::{
     extract::{Request, State},
     http::{HeaderMap, StatusCode},
@@ -9,7 +13,7 @@ use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::Sha256;
-use std::sync::Arc;
+use std::sync::{atomic::Ordering, Arc};
 use tracing::{error, info, warn};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -62,12 +66,12 @@ pub struct GitPRRef {
     pub sha: String,
 }
 
-pub fn routes() -> Router<Arc<WebhookConfig>> {
+pub fn routes() -> Router<Arc<crate::AppState>> {
     Router::new().route("/webhook/github", post(handle_github_webhook))
 }
 
 async fn handle_github_webhook(
-    State(config): State<Arc<WebhookConfig>>,
+    State(app_state): State<Arc<crate::AppState>>,
     headers: HeaderMap,
     request: Request,
 ) -> Result<Json<Value>, StatusCode> {
@@ -80,7 +84,7 @@ async fn handle_github_webhook(
         })?;
 
     // Verify GitHub webhook signature if secret is configured
-    if let Some(secret) = &config.secret {
+    if let Some(secret) = &app_state.webhook_config.secret {
         if let Err(status) = verify_signature(&headers, &body, secret) {
             return Err(status);
         }
@@ -104,8 +108,8 @@ async fn handle_github_webhook(
 
     // Process the webhook based on event type
     match event_type {
-        "push" => handle_push_event(&webhook).await,
-        "pull_request" => handle_pull_request_event(&webhook).await,
+        "push" => handle_push_event(&app_state, &webhook).await,
+        "pull_request" => handle_pull_request_event(&app_state, &webhook).await,
         _ => {
             info!("Ignoring event type: {}", event_type);
             Ok(Json(serde_json::json!({
@@ -149,7 +153,10 @@ fn verify_signature(headers: &HeaderMap, body: &[u8], secret: &str) -> Result<()
     Ok(())
 }
 
-async fn handle_push_event(webhook: &GitHubWebhook) -> Result<Json<Value>, StatusCode> {
+async fn handle_push_event(
+    app_state: &Arc<crate::AppState>,
+    webhook: &GitHubWebhook,
+) -> Result<Json<Value>, StatusCode> {
     let commit_sha = webhook
         .after
         .as_ref()
@@ -170,19 +177,34 @@ async fn handle_push_event(webhook: &GitHubWebhook) -> Result<Json<Value>, Statu
         webhook.repository.full_name, branch, commit_sha
     );
 
-    // TODO: Create workflow and queue nix evaluation
-    // For now, just acknowledge the webhook
+    // Create workflow and trigger nix evaluation
+    let workflow_id = create_workflow(
+        app_state,
+        &webhook.repository.full_name,
+        commit_sha,
+        branch,
+        &webhook.repository.clone_url,
+    )
+    .await
+    .map_err(|e| {
+        error!("Failed to create workflow: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     Ok(Json(serde_json::json!({
         "status": "processed",
         "message": "Push event processed",
         "repository": webhook.repository.full_name,
         "branch": branch,
-        "commit": commit_sha
+        "commit": commit_sha,
+        "workflow_id": workflow_id
     })))
 }
 
-async fn handle_pull_request_event(webhook: &GitHubWebhook) -> Result<Json<Value>, StatusCode> {
+async fn handle_pull_request_event(
+    app_state: &Arc<crate::AppState>,
+    webhook: &GitHubWebhook,
+) -> Result<Json<Value>, StatusCode> {
     let pr = webhook.pull_request.as_ref().ok_or_else(|| {
         error!("Pull request event missing pull_request data");
         StatusCode::BAD_REQUEST
@@ -202,14 +224,27 @@ async fn handle_pull_request_event(webhook: &GitHubWebhook) -> Result<Json<Value
     // Only process certain PR actions
     match action {
         "opened" | "synchronize" | "reopened" => {
-            // TODO: Create workflow and queue nix evaluation
+            let workflow_id = create_workflow(
+                app_state,
+                &webhook.repository.full_name,
+                &pr.head.sha,
+                &format!("pr-{}", pr.number),
+                &webhook.repository.clone_url,
+            )
+            .await
+            .map_err(|e| {
+                error!("Failed to create workflow: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
             Ok(Json(serde_json::json!({
                 "status": "processed",
                 "message": "Pull request event processed",
                 "repository": webhook.repository.full_name,
                 "pr_number": pr.number,
                 "action": action,
-                "commit": pr.head.sha
+                "commit": pr.head.sha,
+                "workflow_id": workflow_id
             })))
         }
         _ => Ok(Json(serde_json::json!({
@@ -217,4 +252,89 @@ async fn handle_pull_request_event(webhook: &GitHubWebhook) -> Result<Json<Value
             "message": format!("Pull request action '{}' ignored", action)
         }))),
     }
+}
+
+async fn create_workflow(
+    app_state: &Arc<crate::AppState>,
+    repository: &str,
+    commit_sha: &str,
+    branch: &str,
+    clone_url: &str,
+) -> Result<String, anyhow::Error> {
+    // Generate workflow ID
+    let counter = app_state.workflow_counter.fetch_add(1, Ordering::Relaxed) + 1;
+    let workflow_id = format!("{}-{}", repository.replace("/", "-"), counter);
+
+    info!(
+        "Creating workflow {} for {} at {} ({})",
+        workflow_id, repository, commit_sha, branch
+    );
+
+    // Spawn background task to process the workflow
+    let app_state_clone = app_state.clone();
+    let workflow_id_clone = workflow_id.clone();
+    let repository = repository.to_string();
+    let commit_sha = commit_sha.to_string();
+    let clone_url = clone_url.to_string();
+
+    tokio::spawn(async move {
+        if let Err(e) = process_workflow(
+            &app_state_clone,
+            &workflow_id_clone,
+            &repository,
+            &commit_sha,
+            &clone_url,
+        )
+        .await
+        {
+            error!("Failed to process workflow {}: {}", workflow_id_clone, e);
+        }
+    });
+
+    Ok(workflow_id)
+}
+
+async fn process_workflow(
+    app_state: &Arc<crate::AppState>,
+    workflow_id: &str,
+    repository: &str,
+    commit_sha: &str,
+    clone_url: &str,
+) -> Result<(), anyhow::Error> {
+    info!("Processing workflow {} for {}", workflow_id, repository);
+
+    // TODO: Make attribute set configurable per repository
+    let attribute_set = "packages.x86_64-linux";
+
+    // Create workflow object
+    let _workflow = Workflow {
+        id: workflow_id.to_string(),
+        repository: repository.to_string(),
+        commit_sha: commit_sha.to_string(),
+        attribute_set: attribute_set.to_string(),
+        status: WorkflowStatus::Running,
+    };
+
+    // Evaluate the repository
+    let mut evaluator = NixEvaluator::new();
+    let derivations = evaluator
+        .evaluate_repository(clone_url, commit_sha, attribute_set)
+        .await?;
+
+    info!(
+        "Found {} derivations for workflow {}",
+        derivations.len(),
+        workflow_id
+    );
+
+    // Add jobs to the build queue
+    {
+        let mut queue = app_state.build_queue.lock().await;
+        for derivation in derivations {
+            queue.add_job(derivation, workflow_id.to_string());
+        }
+    }
+
+    info!("Successfully queued jobs for workflow {}", workflow_id);
+    Ok(())
 }

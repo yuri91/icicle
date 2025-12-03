@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Icicle CI Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f8fafc;
+            color: #1a202c;
+            line-height: 1.6;
+        }
+        
+        header {
+            background: white;
+            border-bottom: 1px solid #e2e8f0;
+            padding: 1rem 0;
+            margin-bottom: 2rem;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 1rem;
+        }
+        
+        h1 {
+            font-size: 1.875rem;
+            font-weight: 600;
+            color: #2d3748;
+        }
+        
+        .section {
+            background: white;
+            border-radius: 0.5rem;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            margin-bottom: 2rem;
+            overflow: hidden;
+        }
+        
+        .section-header {
+            background: #f7fafc;
+            border-bottom: 1px solid #e2e8f0;
+            padding: 1rem 1.5rem;
+        }
+        
+        .section-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: #2d3748;
+        }
+        
+        .stats {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+            margin-top: 0.5rem;
+        }
+        
+        .stat {
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 0.25rem;
+            padding: 0.5rem 0.75rem;
+            font-size: 0.875rem;
+        }
+        
+        .stat-value {
+            font-weight: 600;
+            margin-right: 0.25rem;
+        }
+        
+        .table-container {
+            overflow-x: auto;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        th {
+            background: #f7fafc;
+            border-bottom: 1px solid #e2e8f0;
+            padding: 0.75rem 1rem;
+            text-align: left;
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: #4a5568;
+        }
+        
+        td {
+            border-bottom: 1px solid #f7fafc;
+            padding: 0.75rem 1rem;
+            font-size: 0.875rem;
+        }
+        
+        .status {
+            display: inline-block;
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.25rem;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        
+        .status-queued { background: #fed7aa; color: #9a3412; }
+        .status-running { background: #bfdbfe; color: #1e40af; }
+        .status-success { background: #bbf7d0; color: #166534; }
+        .status-failed { background: #fecaca; color: #991b1b; }
+        .status-cached { background: #e5e7eb; color: #374151; }
+        
+        .progress-bar {
+            width: 100px;
+            height: 20px;
+            background: #f3f4f6;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: #10b981;
+            transition: width 0.3s ease;
+        }
+        
+        .workflow-summary {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+        
+        .auto-refresh {
+            margin-left: auto;
+            font-size: 0.875rem;
+            color: #6b7280;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>Icicle CI Dashboard</h1>
+        </div>
+    </header>
+    
+    <div class="container">
+        <!-- Job Queue Section -->
+        <div class="section">
+            <div class="section-header">
+                <h2 class="section-title">Build Queue</h2>
+                <div class="stats">
+                    <div class="stat">
+                        <span class="stat-value">{{ job_queue.stats.total }}</span>Total
+                    </div>
+                    <div class="stat">
+                        <span class="stat-value">{{ job_queue.stats.queued }}</span>Queued
+                    </div>
+                    <div class="stat">
+                        <span class="stat-value">{{ job_queue.stats.running }}</span>Running
+                    </div>
+                    <div class="stat">
+                        <span class="stat-value">{{ job_queue.stats.success }}</span>Success
+                    </div>
+                    <div class="stat">
+                        <span class="stat-value">{{ job_queue.stats.failed }}</span>Failed
+                    </div>
+                    <div class="stat">
+                        <span class="stat-value">{{ job_queue.stats.cached }}</span>Cached
+                    </div>
+                    <div class="auto-refresh">
+                        Auto-refresh: <span id="refresh-countdown">30</span>s
+                    </div>
+                </div>
+            </div>
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Package</th>
+                            <th>Status</th>
+                            <th>System</th>
+                            <th>Workflows</th>
+                            <th>Derivation Path</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for job in job_queue.jobs %}
+                        <tr>
+                            <td>{{ job.name }}</td>
+                            <td>
+                                <span class="status status-{{ job.status|lower }}">
+                                    {{ job.status }}
+                                </span>
+                            </td>
+                            <td>{{ job.system }}</td>
+                            <td>{{ job.requested_by_count }}</td>
+                            <td><code>{{ job.drv_path }}</code></td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- Workflows Section -->
+        <div class="section">
+            <div class="section-header">
+                <h2 class="section-title">Workflows</h2>
+            </div>
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Workflow ID</th>
+                            <th>Progress</th>
+                            <th>Summary</th>
+                            <th>Jobs</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for workflow in workflows.workflows %}
+                        <tr>
+                            <td><code>{{ workflow.id }}</code></td>
+                            <td>
+                                <div class="workflow-summary">
+                                    <div class="progress-bar">
+                                        <div class="progress-fill" style="width: {{ workflow.summary.progress_percent }}%"></div>
+                                    </div>
+                                    <span>{{ workflow.summary.progress_percent }}%</span>
+                                </div>
+                            </td>
+                            <td>
+                                {{ workflow.summary.completed_jobs }}/{{ workflow.summary.total_jobs }} completed
+                                {% if workflow.summary.cached_jobs > 0 %}
+                                    ({{ workflow.summary.cached_jobs }} cached)
+                                {% endif %}
+                                {% if workflow.summary.failed_jobs > 0 %}
+                                    <span style="color: #991b1b;">, {{ workflow.summary.failed_jobs }} failed</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% for job in workflow.job_details %}
+                                    <span class="status status-{{ job.status|lower }}">{{ job.name }}</span>
+                                {% endfor %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Simple auto-refresh functionality
+        let countdown = 30;
+        const countdownElement = document.getElementById('refresh-countdown');
+        
+        function updateCountdown() {
+            countdown--;
+            countdownElement.textContent = countdown;
+            
+            if (countdown <= 0) {
+                location.reload();
+            }
+        }
+        
+        setInterval(updateCountdown, 1000);
+        
+        // Pause auto-refresh when user is interacting
+        let userActive = false;
+        ['mousedown', 'mousemove', 'keypress', 'scroll', 'touchstart'].forEach(event => {
+            document.addEventListener(event, () => {
+                userActive = true;
+                setTimeout(() => { userActive = false; }, 5000);
+            });
+        });
+        
+        setInterval(() => {
+            if (!userActive && countdown <= 0) {
+                location.reload();
+            }
+        }, 1000);
+    </script>
+</body>
+</html>

@@ -10,6 +10,7 @@ use tracing_subscriber;
 
 mod build;
 mod cache;
+mod dashboard;
 mod nix;
 mod webhook;
 
@@ -45,9 +46,10 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let app = Router::new()
-        .route("/", get(root))
+        .route("/api", get(root))
         .route("/health", get(health))
         .merge(webhook::routes())
+        .merge(dashboard::routes())
         .with_state(app_state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));

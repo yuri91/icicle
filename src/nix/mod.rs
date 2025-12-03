@@ -255,7 +255,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_nix_eval_job_parsing() {
-        let json = r#"{"attr":"packages.x86_64-linux.hello","drvPath":"/nix/store/abc123-hello.drv","outputs":{"out":{"path":"/nix/store/def456-hello"}},"system":"x86_64-linux"}"#;
+        let json = r#"{"attr":"packages.x86_64-linux.hello","drvPath":"/nix/store/abc123-hello.drv","outputs":{"out":"/nix/store/def456-hello"},"system":"x86_64-linux"}"#;
 
         let job: NixEvalJob = serde_json::from_str(json).unwrap();
         assert_eq!(job.attr, "packages.x86_64-linux.hello");

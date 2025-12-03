@@ -13,13 +13,8 @@ pub struct NixEvalJob {
     pub attr: String,
     #[serde(rename = "drvPath")]
     pub drv_path: String,
-    pub outputs: HashMap<String, NixOutput>,
+    pub outputs: HashMap<String, String>,
     pub system: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct NixOutput {
-    pub path: String,
 }
 
 pub struct NixEvaluator {
@@ -110,7 +105,9 @@ impl NixEvaluator {
             .args([
                 "--flake",
                 &format!(".#{}", attribute_set),
-                "--json",
+                "--log-format",
+                "raw",
+                "--meta",
                 "--show-trace",
             ])
             .stdout(Stdio::piped())
@@ -169,12 +166,10 @@ impl NixEvaluator {
 
         // Create derivation objects and build lookup map
         for (i, job) in jobs.iter().enumerate() {
-            let outputs: Vec<String> = job.outputs.values().map(|o| o.path.clone()).collect();
-
             let derivation = Derivation {
                 name: job.attr.clone(),
                 drv_path: job.drv_path.clone(),
-                outputs,
+                outputs: job.outputs.values().cloned().collect(),
                 system: job.system.clone(),
                 input_drvs: Vec::new(), // Will be filled in later
                 status: BuildStatus::Queued,

@@ -1,9 +1,13 @@
 { lib
 , rustPlatform
 , pkg-config
+, nix-eval-jobs
+, git
 }:
 let
   runtime-deps = [
+    nix-eval-jobs
+    git
   ];
 in
 rustPlatform.buildRustPackage {
@@ -16,7 +20,6 @@ rustPlatform.buildRustPackage {
   passthru.runtime-deps = runtime-deps;
   cargoLock = {
     lockFile = ./Cargo.lock;
-    outputHashes = {
-    };
+    outputHashes = { };
   };
 }

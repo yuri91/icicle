@@ -26,6 +26,7 @@ pub struct AppState {
     pub workflow_counter: AtomicU64,
     pub webhook_config: WebhookConfig,
     pub cache_config: CacheConfig,
+    pub db_pool: sqlx::SqlitePool,
 }
 
 #[tokio::main]
@@ -67,6 +68,7 @@ async fn main() -> anyhow::Result<()> {
             cache_url: settings.cache.cache_url.clone(),
             attic_cache_name: settings.cache.attic_cache_name.clone(),
         },
+        db_pool,
     });
 
     let app = Router::new()

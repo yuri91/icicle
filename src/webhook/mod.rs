@@ -14,7 +14,7 @@ use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::Sha256;
-use std::sync::{atomic::Ordering, Arc};
+use std::sync::Arc;
 use tracing::{error, info, warn};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -255,10 +255,25 @@ async fn create_workflow(
     commit_sha: &str,
     branch: &str,
     clone_url: &str,
-) -> Result<String, anyhow::Error> {
-    // Generate workflow ID
-    let counter = app_state.workflow_counter.fetch_add(1, Ordering::Relaxed) + 1;
-    let workflow_id = format!("{}-{}", repository.replace("/", "-"), counter);
+) -> Result<i64, anyhow::Error> {
+    // TODO: Make attribute set configurable per repository
+    let attribute_set = "packages.x86_64-linux";
+    let now = chrono::Utc::now().timestamp();
+
+    // Insert workflow into database to get auto-generated ID
+    let workflow_id = sqlx::query!(
+        r#"
+        INSERT INTO workflows (repository, commit_sha, attribute_set, status, created_at)
+        VALUES (?, ?, ?, 'Pending', ?)
+        "#,
+        repository,
+        commit_sha,
+        attribute_set,
+        now
+    )
+    .execute(&app_state.db_pool)
+    .await?
+    .last_insert_rowid();
 
     info!(
         "Creating workflow {} for {} at {} ({})",
@@ -267,7 +282,6 @@ async fn create_workflow(
 
     // Spawn background task to process the workflow
     let app_state_clone = app_state.clone();
-    let workflow_id_clone = workflow_id.clone();
     let repository = repository.to_string();
     let commit_sha = commit_sha.to_string();
     let clone_url = clone_url.to_string();
@@ -275,14 +289,14 @@ async fn create_workflow(
     tokio::spawn(async move {
         if let Err(e) = process_workflow(
             &app_state_clone,
-            &workflow_id_clone,
+            workflow_id,
             &repository,
             &commit_sha,
             &clone_url,
         )
         .await
         {
-            error!("Failed to process workflow {}: {}", workflow_id_clone, e);
+            error!("Failed to process workflow {}: {}", workflow_id, e);
         }
     });
 
@@ -291,7 +305,7 @@ async fn create_workflow(
 
 async fn process_workflow(
     app_state: &Arc<crate::AppState>,
-    workflow_id: &str,
+    workflow_id: i64,
     repository: &str,
     commit_sha: &str,
     clone_url: &str,
@@ -301,9 +315,19 @@ async fn process_workflow(
     // TODO: Make attribute set configurable per repository
     let attribute_set = "packages.x86_64-linux";
 
+    // Update workflow status to Running
+    sqlx::query!(
+        r#"
+        UPDATE workflows SET status = 'Running' WHERE id = ?
+        "#,
+        workflow_id
+    )
+    .execute(&app_state.db_pool)
+    .await?;
+
     // Create workflow object
     let _workflow = Workflow {
-        id: workflow_id.to_string(),
+        id: workflow_id,
         repository: repository.to_string(),
         commit_sha: commit_sha.to_string(),
         attribute_set: attribute_set.to_string(),
@@ -337,12 +361,12 @@ async fn process_workflow(
                     jobs_cached += 1;
                     // Still add to queue but mark as cached
                     derivation.status = BuildStatus::Cached;
-                    queue.add_job(derivation, workflow_id.to_string());
+                    queue.add_job(derivation, workflow_id);
                 }
                 Ok(false) => {
                     info!("Queueing derivation for build: {}", derivation.name);
                     jobs_queued += 1;
-                    queue.add_job(derivation, workflow_id.to_string());
+                    queue.add_job(derivation, workflow_id);
                 }
                 Err(e) => {
                     warn!("Failed to check cache for {}: {}", derivation.name, e);
@@ -352,7 +376,7 @@ async fn process_workflow(
                         derivation.name
                     );
                     jobs_queued += 1;
-                    queue.add_job(derivation, workflow_id.to_string());
+                    queue.add_job(derivation, workflow_id);
                 }
             }
         }

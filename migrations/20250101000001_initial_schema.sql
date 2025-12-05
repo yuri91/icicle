@@ -16,14 +16,15 @@ CREATE INDEX IF NOT EXISTS idx_builds_status ON builds(status);
 -- Build-Workflow association table: tracks which workflows requested which builds
 CREATE TABLE IF NOT EXISTS build_workflows (
     drv_path TEXT NOT NULL,
-    workflow_id TEXT NOT NULL,
+    workflow_id INTEGER NOT NULL,
     PRIMARY KEY (drv_path, workflow_id),
-    FOREIGN KEY (drv_path) REFERENCES builds(drv_path)
+    FOREIGN KEY (drv_path) REFERENCES builds(drv_path),
+    FOREIGN KEY (workflow_id) REFERENCES workflows(id)
 );
 
 -- Workflows table: stores workflow metadata
 CREATE TABLE IF NOT EXISTS workflows (
-    id TEXT PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     repository TEXT NOT NULL,
     commit_sha TEXT NOT NULL,
     attribute_set TEXT NOT NULL,

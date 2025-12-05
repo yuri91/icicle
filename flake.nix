@@ -48,6 +48,7 @@
           git
           cargo-edit
           cargo-watch
+          sqlx-cli
           rust-analyzer-unwrapped
         ];
         inputsFrom = [

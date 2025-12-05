@@ -46,7 +46,7 @@ struct QueueStats {
 
 #[derive(Clone)]
 struct WorkflowInfo {
-    id: String,
+    id: i64,
     job_details: Vec<WorkflowJobDetail>,
     summary: WorkflowSummary,
 }
@@ -142,15 +142,12 @@ fn build_job_queue_section(queue: &crate::build::BuildQueue) -> JobQueueSection 
 }
 
 fn build_workflow_section(queue: &crate::build::BuildQueue) -> WorkflowSection {
-    let mut workflow_map: HashMap<String, Vec<&BuildJob>> = HashMap::new();
+    let mut workflow_map: HashMap<i64, Vec<&BuildJob>> = HashMap::new();
 
     // Group jobs by workflow
     for job in queue.get_jobs() {
         for workflow_id in &job.requested_by {
-            workflow_map
-                .entry(workflow_id.clone())
-                .or_default()
-                .push(job);
+            workflow_map.entry(*workflow_id).or_default().push(job);
         }
     }
 

@@ -15,12 +15,12 @@ pub struct Derivation {
 pub struct BuildJob {
     pub derivation: Derivation,
     pub status: BuildStatus,
-    pub requested_by: HashSet<String>, // workflow IDs that need this derivation
+    pub requested_by: HashSet<i64>, // workflow IDs that need this derivation
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workflow {
-    pub id: String,
+    pub id: i64,
     pub repository: String,
     pub commit_sha: String,
     pub attribute_set: String, // e.g. "packages.x86_64-linux"
@@ -76,7 +76,7 @@ impl BuildQueue {
         }
     }
 
-    pub fn add_job(&mut self, derivation: Derivation, workflow_id: String) {
+    pub fn add_job(&mut self, derivation: Derivation, workflow_id: i64) {
         let drv_path = derivation.drv_path.clone();
 
         if let Some(job) = self.jobs.get_mut(&drv_path) {

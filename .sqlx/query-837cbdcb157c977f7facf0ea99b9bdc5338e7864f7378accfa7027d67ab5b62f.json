@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n        INSERT INTO workflows (repository, commit_sha, attribute_set, status, created_at)\n        VALUES (?, ?, ?, 'Pending', ?)\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "837cbdcb157c977f7facf0ea99b9bdc5338e7864f7378accfa7027d67ab5b62f"
+}

@@ -8,6 +8,8 @@ pub struct Settings {
     pub webhook: WebhookConfig,
     pub cache: CacheConfig,
     pub nix: NixConfig,
+    pub build: BuildConfig,
+    pub database: DatabaseConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -33,6 +35,20 @@ pub struct NixConfig {
     pub eval_timeout_secs: u64,
     /// Default attribute set to evaluate (e.g., "packages.x86_64-linux")
     pub default_attr_set: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct BuildConfig {
+    /// Maximum number of builds to run concurrently
+    pub max_concurrent_builds: usize,
+    /// Timeout for individual builds in seconds
+    pub build_timeout_secs: u64,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct DatabaseConfig {
+    /// SQLite database file path
+    pub path: String,
 }
 
 impl Settings {
@@ -70,6 +86,13 @@ impl Settings {
             nix: NixConfig {
                 eval_timeout_secs: 300,
                 default_attr_set: "packages.x86_64-linux".to_string(),
+            },
+            build: BuildConfig {
+                max_concurrent_builds: 4,
+                build_timeout_secs: 3600,
+            },
+            database: DatabaseConfig {
+                path: "./icicle.db".to_string(),
             },
         }
     }

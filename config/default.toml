@@ -32,3 +32,15 @@ eval_timeout_secs = 300
 # Default attribute set to evaluate from flakes
 # This will be used if not specified in webhook payload
 default_attr_set = "packages.x86_64-linux"
+
+[build]
+# Maximum number of builds to run concurrently
+max_concurrent_builds = 4
+
+# Timeout for individual builds in seconds (1 hour default)
+build_timeout_secs = 3600
+
+[database]
+# SQLite database path for build metadata
+# Logs are stored by Nix and accessed via `nix log` command
+path = "./icicle.db"

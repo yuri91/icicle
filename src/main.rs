@@ -6,7 +6,6 @@ use std::{
 };
 use tokio::sync::Mutex;
 use tracing::{info, Level};
-use tracing_subscriber;
 
 mod build;
 mod cache;

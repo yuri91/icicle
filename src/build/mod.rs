@@ -62,6 +62,12 @@ pub struct BuildQueue {
     queue_order: VecDeque<String>,   // drv_paths in order
 }
 
+impl Default for BuildQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BuildQueue {
     pub fn new() -> Self {
         Self {

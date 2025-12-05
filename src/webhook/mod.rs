@@ -86,9 +86,7 @@ async fn handle_github_webhook(
 
     // Verify GitHub webhook signature if secret is configured
     if let Some(secret) = &app_state.webhook_config.secret {
-        if let Err(status) = verify_signature(&headers, &body, secret) {
-            return Err(status);
-        }
+        verify_signature(&headers, &body, secret)?
     } else {
         warn!("Webhook secret not configured - signature verification skipped");
     }
@@ -211,11 +209,7 @@ async fn handle_pull_request_event(
         StatusCode::BAD_REQUEST
     })?;
 
-    let action = webhook
-        .action
-        .as_ref()
-        .map(|s| s.as_str())
-        .unwrap_or("unknown");
+    let action = webhook.action.as_deref().unwrap_or("unknown");
 
     info!(
         "Processing pull request {} action {} for {}, commit {}",

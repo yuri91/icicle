@@ -19,3 +19,4 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-feature
 askama = "0.12"
 tower-http = { version = "0.6", features = ["fs"] }
 tokio-tungstenite = "0.24"
+config = "0.14"

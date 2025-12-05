@@ -1,0 +1,34 @@
+# Icicle CI Configuration
+# This is the default configuration file with sensible defaults.
+# Override values by:
+# 1. Creating config/production.toml (loaded automatically)
+# 2. Setting environment variables with ICICLE_ prefix
+#    Example: ICICLE_SERVER__PORT=8080
+
+[server]
+# Host to bind the web server to
+host = "0.0.0.0"
+# Port to listen on
+port = 3000
+
+[webhook]
+# GitHub webhook secret for signature verification
+# Leave unset or set via ICICLE_WEBHOOK__SECRET environment variable
+# secret = "your-webhook-secret-here"
+
+[cache]
+# Nix binary cache URL to check for existing builds
+# Default to public NixOS cache
+cache_url = "https://cache.nixos.org"
+
+# Attic cache name for uploading successful builds
+# Set this to your Attic cache name
+attic_cache_name = "icicle"
+
+[nix]
+# Timeout for nix-eval-jobs in seconds
+eval_timeout_secs = 300
+
+# Default attribute set to evaluate from flakes
+# This will be used if not specified in webhook payload
+default_attr_set = "packages.x86_64-linux"

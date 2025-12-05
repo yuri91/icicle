@@ -1,12 +1,19 @@
-use sqlx::{sqlite::SqlitePool, Error};
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions},
+    Error,
+};
+use std::str::FromStr;
 
 /// Initialize the SQLite database pool and run migrations
 pub async fn init_database(database_path: &str) -> Result<SqlitePool, Error> {
-    // Create database file if it doesn't exist
-    let db_url = format!("sqlite:{}", database_path);
+    // Create SQLite connection options
+    let options = SqliteConnectOptions::from_str(database_path)?.create_if_missing(true);
 
-    // Connect to database
-    let pool = SqlitePool::connect(&db_url).await?;
+    // Create connection pool
+    let pool = SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect_with(options)
+        .await?;
 
     // Run migrations
     sqlx::migrate!("./migrations").run(&pool).await?;

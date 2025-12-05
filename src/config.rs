@@ -92,7 +92,7 @@ impl Settings {
                 build_timeout_secs: 3600,
             },
             database: DatabaseConfig {
-                path: "./icicle.db".to_string(),
+                path: "sqlite:icicle.db".to_string(),
             },
         }
     }

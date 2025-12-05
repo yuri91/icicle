@@ -11,6 +11,7 @@ mod build;
 mod cache;
 mod config;
 mod dashboard;
+mod db;
 mod nix;
 mod webhook;
 
@@ -49,6 +50,11 @@ async fn main() -> anyhow::Result<()> {
         "  Webhook secret configured: {}",
         settings.webhook.secret.is_some()
     );
+
+    // Initialize database
+    info!("Initializing database at: {}", settings.database.path);
+    let db_pool = db::init_database(&settings.database.path).await?;
+    info!("Database initialized successfully");
 
     // Initialize app state
     let app_state = Arc::new(AppState {

@@ -2,3 +2,4 @@
 /result
 .pre-commit-config.yaml
 /config/production.toml
+*.db

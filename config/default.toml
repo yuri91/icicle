@@ -43,4 +43,4 @@ build_timeout_secs = 3600
 [database]
 # SQLite database path for build metadata
 # Logs are stored by Nix and accessed via `nix log` command
-path = "./icicle.db"
+path = "sqlite:icicle.db"

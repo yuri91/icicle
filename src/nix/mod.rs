@@ -188,7 +188,7 @@ impl NixEvaluator {
             // Filter to only include dependencies that are also jobs (not intermediate derivations)
             let input_job_drvs: Vec<String> = job_dependencies
                 .into_iter()
-                .filter(|drv_path| drv_to_job.contains_key(drv_path))
+                .filter(|drv_path| drv_to_job.contains_key(drv_path) && &job.drv_path != drv_path)
                 .collect();
 
             derivations[i].input_drvs = input_job_drvs;

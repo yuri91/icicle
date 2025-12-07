@@ -3,6 +3,11 @@ name = "icicle"
 version = "0.1.0"
 edition = "2021"
 
+[profile.dev]
+panic = "abort"
+[profile.release]
+panic = "abort"
+
 [dependencies]
 tokio = { version = "1.0", features = ["full"] }
 axum = "0.8"
@@ -22,3 +27,4 @@ tokio-tungstenite = "0.24"
 config = "0.14"
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "migrate"] }
 chrono = "0.4"
+daggy = "0.8"

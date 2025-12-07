@@ -38,10 +38,13 @@ struct JobInfo {
 struct QueueStats {
     total: usize,
     queued: usize,
+    ready: usize,
     running: usize,
     success: usize,
     failed: usize,
     cached: usize,
+    timedout: usize,
+    canceled: usize,
 }
 
 #[derive(Clone)]
@@ -75,13 +78,11 @@ pub fn routes() -> Router<Arc<crate::AppState>> {
 async fn dashboard(
     State(app_state): State<Arc<crate::AppState>>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let queue = app_state.build_queue.lock().await;
-
     // Build Job Queue Section
-    let job_queue = build_job_queue_section(&queue);
+    let job_queue = build_job_queue_section(&app_state.build_queue);
 
     // Build Workflows Section
-    let workflows = build_workflow_section(&queue);
+    let workflows = build_workflow_section(&app_state.build_queue);
 
     let template = DashboardTemplate {
         job_queue,
@@ -99,10 +100,13 @@ fn build_job_queue_section(queue: &crate::build::BuildQueue) -> JobQueueSection 
     let mut stats = QueueStats {
         total: 0,
         queued: 0,
+        ready: 0,
         running: 0,
         success: 0,
         failed: 0,
         cached: 0,
+        timedout: 0,
+        canceled: 0,
     };
 
     for job in queue.get_jobs() {
@@ -110,10 +114,13 @@ fn build_job_queue_section(queue: &crate::build::BuildQueue) -> JobQueueSection 
 
         match job.status {
             BuildStatus::Queued => stats.queued += 1,
+            BuildStatus::Ready => stats.ready += 1,
             BuildStatus::Running => stats.running += 1,
             BuildStatus::Success => stats.success += 1,
             BuildStatus::Failed => stats.failed += 1,
             BuildStatus::Cached => stats.cached += 1,
+            BuildStatus::Timedout => stats.timedout += 1,
+            BuildStatus::Canceled => stats.canceled += 1,
         }
 
         jobs.push(JobInfo {
@@ -130,10 +137,13 @@ fn build_job_queue_section(queue: &crate::build::BuildQueue) -> JobQueueSection 
     jobs.sort_by(|a, b| {
         let priority = |status: &BuildStatus| match status {
             BuildStatus::Running => 0,
-            BuildStatus::Queued => 1,
-            BuildStatus::Failed => 2,
-            BuildStatus::Success => 3,
-            BuildStatus::Cached => 4,
+            BuildStatus::Ready => 1,
+            BuildStatus::Queued => 2,
+            BuildStatus::Failed => 3,
+            BuildStatus::Timedout => 4,
+            BuildStatus::Canceled => 5,
+            BuildStatus::Success => 6,
+            BuildStatus::Cached => 7,
         };
         priority(&a.status).cmp(&priority(&b.status))
     });
@@ -142,12 +152,15 @@ fn build_job_queue_section(queue: &crate::build::BuildQueue) -> JobQueueSection 
 }
 
 fn build_workflow_section(queue: &crate::build::BuildQueue) -> WorkflowSection {
-    let mut workflow_map: HashMap<i64, Vec<&BuildJob>> = HashMap::new();
+    let mut workflow_map: HashMap<i64, Vec<BuildJob>> = HashMap::new();
 
     // Group jobs by workflow
     for job in queue.get_jobs() {
         for workflow_id in &job.requested_by {
-            workflow_map.entry(*workflow_id).or_default().push(job);
+            workflow_map
+                .entry(*workflow_id)
+                .or_default()
+                .push(job.clone());
         }
     }
 

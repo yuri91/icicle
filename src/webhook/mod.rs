@@ -1,6 +1,5 @@
 use crate::{
-    build::{BuildStatus, Workflow, WorkflowStatus},
-    cache::CacheClient,
+    build::{Workflow, WorkflowStatus},
     nix::NixEvaluator,
 };
 use axum::{
@@ -22,6 +21,7 @@ type HmacSha256 = Hmac<Sha256>;
 #[derive(Debug, Clone)]
 pub struct WebhookConfig {
     pub secret: Option<String>,
+    pub attrset: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -256,8 +256,6 @@ async fn create_workflow(
     branch: &str,
     clone_url: &str,
 ) -> Result<i64, anyhow::Error> {
-    // TODO: Make attribute set configurable per repository
-    let attribute_set = "packages.x86_64-linux";
     let now = chrono::Utc::now().timestamp();
 
     // Insert workflow into database to get auto-generated ID
@@ -268,7 +266,7 @@ async fn create_workflow(
         "#,
         repository,
         commit_sha,
-        attribute_set,
+        app_state.webhook_config.attrset,
         now
     )
     .execute(&app_state.db_pool)
@@ -312,9 +310,6 @@ async fn process_workflow(
 ) -> Result<(), anyhow::Error> {
     info!("Processing workflow {} for {}", workflow_id, repository);
 
-    // TODO: Make attribute set configurable per repository
-    let attribute_set = "packages.x86_64-linux";
-
     // Update workflow status to Running
     sqlx::query!(
         r#"
@@ -326,18 +321,18 @@ async fn process_workflow(
     .await?;
 
     // Create workflow object
-    let _workflow = Workflow {
+    let workflow = Workflow {
         id: workflow_id,
         repository: repository.to_string(),
         commit_sha: commit_sha.to_string(),
-        attribute_set: attribute_set.to_string(),
+        attribute_set: app_state.webhook_config.attrset.clone(),
         status: WorkflowStatus::Running,
     };
 
     // Evaluate the repository
     let mut evaluator = NixEvaluator::new();
     let derivations = evaluator
-        .evaluate_repository(clone_url, commit_sha, attribute_set)
+        .evaluate_repository(clone_url, commit_sha, &workflow.attribute_set)
         .await?;
 
     info!(
@@ -346,45 +341,11 @@ async fn process_workflow(
         workflow_id
     );
 
-    // Check cache and add jobs to the build queue
-    let cache_client = CacheClient::new(app_state.cache_config.clone());
-    let mut jobs_queued = 0;
-    let mut jobs_cached = 0;
+    let jobs_queued = derivations.len();
 
-    {
-        let mut queue = app_state.build_queue.lock().await;
-        for mut derivation in derivations {
-            // Check if derivation outputs are already cached
-            match cache_client.derivation_cached(&derivation.outputs).await {
-                Ok(true) => {
-                    info!("Skipping cached derivation: {}", derivation.name);
-                    jobs_cached += 1;
-                    // Still add to queue but mark as cached
-                    derivation.status = BuildStatus::Cached;
-                    queue.add_job(derivation, workflow_id);
-                }
-                Ok(false) => {
-                    info!("Queueing derivation for build: {}", derivation.name);
-                    jobs_queued += 1;
-                    queue.add_job(derivation, workflow_id);
-                }
-                Err(e) => {
-                    warn!("Failed to check cache for {}: {}", derivation.name, e);
-                    // Queue the job anyway if cache check fails
-                    info!(
-                        "Queueing derivation due to cache check failure: {}",
-                        derivation.name
-                    );
-                    jobs_queued += 1;
-                    queue.add_job(derivation, workflow_id);
-                }
-            }
-        }
-    }
+    app_state.build_queue.add_workflow(derivations, workflow_id);
 
-    info!(
-        "Workflow {} processed: {} jobs queued, {} jobs cached",
-        workflow_id, jobs_queued, jobs_cached
-    );
+    info!("Workflow {} - jobs queued: {}", workflow_id, jobs_queued,);
+
     Ok(())
 }

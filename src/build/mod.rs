@@ -1,5 +1,11 @@
+use daggy::{Dag, NodeIndex, Walker};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Mutex,
+};
+use tokio::sync::Notify;
+use tracing::info;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Derivation {
@@ -27,96 +33,210 @@ pub struct Workflow {
     pub status: WorkflowStatus,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub enum BuildStatus {
-    Queued,
+    Queued, // Waiting for dependencies to complete
+    Ready,  // Dependencies satisfied, waiting for worker slot
     Running,
     Success,
+    Cached, // Already in cache, no build needed
     Failed,
-    Cached, // Already in attic cache
+    Timedout,
+    Canceled,
+}
+impl BuildStatus {
+    pub fn done(self) -> bool {
+        self == BuildStatus::Success
+            || self == BuildStatus::Cached
+            || self == BuildStatus::Failed
+            || self == BuildStatus::Timedout
+            || self == BuildStatus::Canceled
+    }
+    pub fn error(self) -> bool {
+        self == BuildStatus::Failed
+            || self == BuildStatus::Timedout
+            || self == BuildStatus::Canceled
+    }
 }
 
 impl std::fmt::Display for BuildStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BuildStatus::Queued => write!(f, "queued"),
+            BuildStatus::Ready => write!(f, "ready"),
             BuildStatus::Running => write!(f, "running"),
             BuildStatus::Success => write!(f, "success"),
-            BuildStatus::Failed => write!(f, "failed"),
             BuildStatus::Cached => write!(f, "cached"),
+            BuildStatus::Failed => write!(f, "failed"),
+            BuildStatus::Timedout => write!(f, "timed out"),
+            BuildStatus::Canceled => write!(f, "canceled"),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WorkflowStatus {
-    Pending,
     Running,
     Completed,
     Failed,
+    Canceled,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
+struct BuildQueueState {
+    dag: Dag<BuildJob, ()>,
+    drv_to_node: HashMap<String, NodeIndex>,
+    ready: Vec<NodeIndex>,
+}
+#[derive(Debug, Default)]
 pub struct BuildQueue {
-    jobs: HashMap<String, BuildJob>, // keyed by drv_path
-    queue_order: VecDeque<String>,   // drv_paths in order
+    state: Mutex<BuildQueueState>,
+    ready_signal: Notify,
 }
 
-impl Default for BuildQueue {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl BuildQueue {
-    pub fn new() -> Self {
-        Self {
-            jobs: HashMap::new(),
-            queue_order: VecDeque::new(),
-        }
-    }
-
-    pub fn add_job(&mut self, derivation: Derivation, workflow_id: i64) {
-        let drv_path = derivation.drv_path.clone();
-
-        if let Some(job) = self.jobs.get_mut(&drv_path) {
-            job.requested_by.insert(workflow_id);
-        } else {
+impl BuildQueueState {
+    fn add_jobs(&mut self, derivations: Vec<Derivation>, workflow_id: i64) {
+        let mut roots = Vec::new();
+        // Add nodes
+        for d in &derivations {
+            if let Some(idx) = self.drv_to_node.get(&d.drv_path) {
+                // Duplicate job, just add the workflow to requested_by
+                self.dag
+                    .node_weight_mut(*idx)
+                    .unwrap()
+                    .requested_by
+                    .insert(workflow_id);
+                continue;
+            }
+            let ready = d.input_drvs.is_empty();
             let mut requested_by = HashSet::new();
             requested_by.insert(workflow_id);
-
-            let job = BuildJob {
-                derivation,
-                status: BuildStatus::Queued,
+            let idx = self.dag.add_node(BuildJob {
+                derivation: d.clone(),
+                status: if ready {
+                    BuildStatus::Ready
+                } else {
+                    BuildStatus::Queued
+                },
                 requested_by,
-            };
-
-            self.jobs.insert(drv_path.clone(), job);
-            self.queue_order.push_back(drv_path);
+            });
+            if ready {
+                roots.push(idx);
+            }
+            self.drv_to_node.insert(d.drv_path.clone(), idx);
         }
-    }
-
-    pub fn next_job(&mut self) -> Option<String> {
-        while let Some(drv_path) = self.queue_order.front() {
-            if let Some(job) = self.jobs.get(drv_path) {
-                if job.status == BuildStatus::Queued {
-                    return Some(drv_path.clone());
+        // Add edges
+        for d in derivations {
+            let to_idx = self.drv_to_node.get(&d.drv_path).unwrap();
+            for dep in &d.input_drvs {
+                let from_idx = self.drv_to_node.get(dep).unwrap();
+                if self.dag.find_edge(*from_idx, *to_idx).is_none() {
+                    self.dag.add_edge(*from_idx, *to_idx, ()).unwrap();
                 }
             }
-            self.queue_order.pop_front();
         }
-        None
+        self.dag.transitive_reduce(roots.clone());
+        self.ready.extend(roots.into_iter());
+    }
+    fn update_status(&mut self, drv_path: &str, status: BuildStatus) {
+        let Some(id) = self.drv_to_node.get(drv_path) else {
+            return;
+        };
+        if status.error() {
+            self.propagate_error(*id, status);
+        } else if status.done() {
+            self.propagate_success(*id, status);
+        } else {
+            let job = self.dag.node_weight_mut(*id).unwrap();
+            job.status = status;
+        }
+    }
+    fn propagate_error(&mut self, id: NodeIndex, status: BuildStatus) {
+        let job = self.dag.node_weight_mut(id).unwrap();
+        job.status = status;
+        let mut walker = self.dag.parents(id);
+        while let Some((e, _)) = walker.walk_next(&self.dag) {
+            self.dag.remove_edge(e);
+        }
+        let mut walker = self.dag.children(id);
+        while let Some((_, n)) = walker.walk_next(&self.dag) {
+            self.ready.push(n);
+            self.propagate_error(n, status);
+        }
+    }
+    fn propagate_success(&mut self, id: NodeIndex, status: BuildStatus) {
+        let job = self.dag.node_weight_mut(id).unwrap();
+        job.status = status;
+        let mut walker = self.dag.children(id);
+        while let Some((e, n)) = walker.walk_next(&self.dag) {
+            self.dag.remove_edge(e);
+            let nparents = self.dag.parents(n).iter(&self.dag).count();
+            if nparents == 0 {
+                let j = self.dag.node_weight_mut(n).unwrap();
+                j.status = BuildStatus::Ready;
+                self.ready.push(n);
+            }
+        }
+    }
+    fn clear_workflow(&mut self, workflow_id: i64) {
+        for (d, i) in self.drv_to_node.clone().into_iter() {
+            let empty = {
+                let job = self.dag.node_weight_mut(i).unwrap();
+                job.requested_by.remove(&workflow_id);
+                job.requested_by.is_empty()
+            };
+            if empty {
+                self.dag.remove_node(i);
+                self.drv_to_node.remove(&d);
+            }
+        }
+    }
+}
+impl BuildQueue {
+    pub fn new() -> Self {
+        BuildQueue::default()
     }
 
-    pub fn get_job(&self, drv_path: &str) -> Option<&BuildJob> {
-        self.jobs.get(drv_path)
+    /// Add a batch of derivations from a workflow
+    pub fn add_workflow(&self, derivations: Vec<Derivation>, workflow_id: i64) {
+        let mut state = self.state.lock().unwrap();
+        state.add_jobs(derivations, workflow_id);
+        if !state.ready.is_empty() {
+            self.ready_signal.notify_one();
+        }
+    }
+    pub async fn wait_for_ready_jobs(&self) {
+        self.ready_signal.notified().await;
     }
 
-    pub fn get_job_mut(&mut self, drv_path: &str) -> Option<&mut BuildJob> {
-        self.jobs.get_mut(drv_path)
+    /// Drain the ready queue
+    pub fn drain_ready_jobs(&self) -> Vec<BuildJob> {
+        let mut state = self.state.lock().unwrap();
+        let mut ret_ready = Vec::new();
+        std::mem::swap(&mut ret_ready, &mut state.ready);
+        ret_ready
+            .into_iter()
+            .map(|i| state.dag.node_weight(i).unwrap().clone())
+            .collect()
     }
 
-    pub fn get_jobs(&self) -> impl Iterator<Item = &BuildJob> {
-        self.jobs.values()
+    /// Mark a job as done
+    pub fn update_status(&self, drv_path: &str, status: BuildStatus) {
+        let mut state = self.state.lock().unwrap();
+        state.update_status(drv_path, status);
+        if !state.ready.is_empty() {
+            self.ready_signal.notify_one();
+        }
+    }
+
+    /// Remove a workflow's jobs from the queue
+    pub fn clear_workflow(&self, workflow_id: i64) {
+        let mut state = self.state.lock().unwrap();
+        state.clear_workflow(workflow_id);
+    }
+
+    pub fn get_jobs(&self) -> Vec<BuildJob> {
+        let mut state = self.state.lock().unwrap();
+        state.dag.node_weights_mut().map(|n| n.clone()).collect()
     }
 }

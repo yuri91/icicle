@@ -4,7 +4,6 @@ use std::{
     net::SocketAddr,
     sync::{atomic::AtomicU64, Arc},
 };
-use tokio::sync::Mutex;
 use tracing::{info, Level};
 
 mod build;
@@ -12,6 +11,7 @@ mod cache;
 mod config;
 mod dashboard;
 mod db;
+mod executor;
 mod nix;
 mod webhook;
 
@@ -20,9 +20,8 @@ use cache::CacheConfig;
 use config::Settings;
 use webhook::WebhookConfig;
 
-#[derive(Debug)]
 pub struct AppState {
-    pub build_queue: Mutex<BuildQueue>,
+    pub build_queue: Arc<BuildQueue>,
     pub workflow_counter: AtomicU64,
     pub webhook_config: WebhookConfig,
     pub cache_config: CacheConfig,
@@ -58,17 +57,33 @@ async fn main() -> anyhow::Result<()> {
     info!("Database initialized successfully");
 
     // Initialize app state
+    let build_queue = Arc::new(BuildQueue::new());
+
     let app_state = Arc::new(AppState {
-        build_queue: Mutex::new(BuildQueue::new()),
+        build_queue: build_queue.clone(),
         workflow_counter: AtomicU64::new(0),
         webhook_config: WebhookConfig {
             secret: settings.webhook.secret.clone(),
+            attrset: settings.nix.default_attr_set.clone(),
         },
         cache_config: CacheConfig {
             cache_url: settings.cache.cache_url.clone(),
             attic_cache_name: settings.cache.attic_cache_name.clone(),
         },
+        db_pool: db_pool.clone(),
+    });
+
+    // Initialize and spawn build executor
+    let executor = Arc::new(executor::BuildExecutor::new(
+        build_queue,
         db_pool,
+        cache::CacheClient::new(app_state.cache_config.clone()),
+        settings.build.max_concurrent_builds,
+        settings.build.build_timeout_secs,
+    ));
+
+    tokio::spawn(async move {
+        executor.run().await;
     });
 
     let app = Router::new()

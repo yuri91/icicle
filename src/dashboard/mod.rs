@@ -127,7 +127,7 @@ fn build_job_queue_section(queue: &crate::build::BuildQueue) -> JobQueueSection 
             name: job.derivation.name.clone(),
             drv_path: job.derivation.drv_path.clone(),
             system: job.derivation.system.clone(),
-            status: job.derivation.status.clone(),
+            status: job.status.clone(),
             requested_by_count: job.requested_by.len(),
             outputs: job.derivation.outputs.clone(),
         });

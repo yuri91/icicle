@@ -1,7 +1,7 @@
 use crate::build::{BuildStatus, Derivation};
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::Stdio;
 use tempfile::TempDir;
@@ -127,6 +127,7 @@ impl NixEvaluator {
 
         // Parse the jobs
         let mut jobs = Vec::new();
+        let mut dupes = HashSet::new();
         for line in stdout.lines() {
             if line.trim().is_empty() {
                 continue;
@@ -134,6 +135,11 @@ impl NixEvaluator {
 
             match serde_json::from_str::<NixEvalJob>(line) {
                 Ok(job) => {
+                    if dupes.contains(&job.drv_path) {
+                        println!("dupe: {}", job.drv_path);
+                        continue;
+                    }
+                    dupes.insert(job.drv_path.clone());
                     jobs.push(job);
                 }
                 Err(e) => {

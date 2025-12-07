@@ -85,7 +85,13 @@ impl BuildExecutor {
             BuildStatus::Running
         };
 
-        self.build_queue.update_status(&drv_path, status);
+        let completed_workflows = self.build_queue.update_status(&drv_path, status);
+
+        // Handle workflow completions
+        for workflow_id in completed_workflows {
+            self.handle_workflow_completion(workflow_id).await;
+        }
+
         // Update database
         let now = chrono::Utc::now().timestamp();
         if let Err(e) = sqlx::query(
@@ -158,7 +164,12 @@ impl BuildExecutor {
         };
 
         // Update queue status
-        self.build_queue.update_status(&drv_path, final_status);
+        let completed_workflows = self.build_queue.update_status(&drv_path, final_status);
+
+        // Handle workflow completions
+        for workflow_id in completed_workflows {
+            self.handle_workflow_completion(workflow_id).await;
+        }
 
         // Update database
         let finished_at = chrono::Utc::now().timestamp();
@@ -226,5 +237,73 @@ impl BuildExecutor {
             .await?;
 
         Ok(())
+    }
+
+    /// Handle workflow completion: update DB, log summary, clear queue
+    async fn handle_workflow_completion(&self, workflow_id: i64) {
+        info!("Workflow {} completed, generating summary", workflow_id);
+
+        // Get all jobs for this workflow
+        let jobs = self.build_queue.get_workflow_jobs(workflow_id);
+
+        if jobs.is_empty() {
+            warn!("Workflow {} has no jobs", workflow_id);
+            return;
+        }
+
+        // Calculate summary statistics
+        let total = jobs.len();
+        let success = jobs
+            .iter()
+            .filter(|j| j.status == BuildStatus::Success)
+            .count();
+        let failed = jobs
+            .iter()
+            .filter(|j| j.status == BuildStatus::Failed)
+            .count();
+        let cached = jobs
+            .iter()
+            .filter(|j| j.status == BuildStatus::Cached)
+            .count();
+        let timedout = jobs
+            .iter()
+            .filter(|j| j.status == BuildStatus::Timedout)
+            .count();
+        let canceled = jobs
+            .iter()
+            .filter(|j| j.status == BuildStatus::Canceled)
+            .count();
+
+        // Determine final workflow status
+        let has_errors = jobs.iter().any(|j| j.status.error());
+        let final_status = if has_errors { "Failed" } else { "Completed" };
+
+        info!(
+            "Workflow {} {}: {} total jobs ({} success, {} cached, {} failed, {} timedout, {} canceled)",
+            workflow_id, final_status, total, success, cached, failed, timedout, canceled
+        );
+
+        // Update workflow status in database
+        if let Err(e) = sqlx::query(
+            r#"
+            UPDATE workflows
+            SET status = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(final_status)
+        .bind(workflow_id)
+        .execute(&self.db_pool)
+        .await
+        {
+            error!(
+                "Failed to update workflow {} status in database: {}",
+                workflow_id, e
+            );
+        }
+
+        // Clear workflow from queue (jobs are persisted in DB)
+        self.build_queue.clear_workflow(workflow_id);
+        info!("Workflow {} cleared from queue", workflow_id);
     }
 }

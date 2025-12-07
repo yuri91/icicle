@@ -341,11 +341,36 @@ async fn process_workflow(
         workflow_id
     );
 
-    let jobs_queued = derivations.len();
+    let is_complete = app_state.build_queue.add_workflow(derivations, workflow_id);
 
-    app_state.build_queue.add_workflow(derivations, workflow_id);
+    // If workflow is already complete (all jobs were done), handle completion immediately
+    if is_complete {
+        info!(
+            "Workflow {} completed immediately (all jobs already done)",
+            workflow_id
+        );
 
-    info!("Workflow {} - jobs queued: {}", workflow_id, jobs_queued,);
+        // Get jobs to determine final status
+        let jobs = app_state.build_queue.get_workflow_jobs(workflow_id);
+        let has_errors = jobs.iter().any(|j| j.status.error());
+        let final_status = if has_errors { "Failed" } else { "Completed" };
+
+        // Update workflow status
+        sqlx::query!(
+            r#"
+            UPDATE workflows SET status = ? WHERE id = ?
+            "#,
+            final_status,
+            workflow_id
+        )
+        .execute(&app_state.db_pool)
+        .await?;
+
+        // Clear from queue
+        app_state.build_queue.clear_workflow(workflow_id);
+    } else {
+        info!("Workflow {} queued with pending jobs", workflow_id);
+    }
 
     Ok(())
 }

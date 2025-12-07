@@ -1,11 +1,10 @@
-use daggy::{Dag, NodeIndex, Walker};
+use daggy::{stable_dag::StableDag, NodeIndex, Walker};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     sync::Mutex,
 };
 use tokio::sync::Notify;
-use tracing::info;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Derivation {
@@ -84,9 +83,10 @@ pub enum WorkflowStatus {
 
 #[derive(Debug, Default)]
 struct BuildQueueState {
-    dag: Dag<BuildJob, ()>,
+    dag: StableDag<BuildJob, ()>,
     drv_to_node: HashMap<String, NodeIndex>,
     ready: Vec<NodeIndex>,
+    pending_workflows: HashMap<i64, usize>, // workflow_id -> count of unfinished jobs
 }
 #[derive(Debug, Default)]
 pub struct BuildQueue {
@@ -95,19 +95,29 @@ pub struct BuildQueue {
 }
 
 impl BuildQueueState {
-    fn add_jobs(&mut self, derivations: Vec<Derivation>, workflow_id: i64) {
+    /// Add jobs for a workflow. Returns true if the workflow is already complete.
+    fn add_jobs(&mut self, derivations: Vec<Derivation>, workflow_id: i64) -> bool {
         let mut roots = Vec::new();
+        let mut new_jobs_count = 0;
+        let mut duplicate_pending_jobs = 0;
+
         // Add nodes
         for d in &derivations {
             if let Some(idx) = self.drv_to_node.get(&d.drv_path) {
                 // Duplicate job, just add the workflow to requested_by
-                self.dag
-                    .node_weight_mut(*idx)
-                    .unwrap()
-                    .requested_by
-                    .insert(workflow_id);
+                let job = self.dag.node_weight_mut(*idx).unwrap();
+                job.requested_by.insert(workflow_id);
+
+                // Count duplicate jobs that aren't done yet
+                if !job.status.done() {
+                    duplicate_pending_jobs += 1;
+                }
                 continue;
             }
+
+            // New job
+            new_jobs_count += 1;
+
             let ready = d.input_drvs.is_empty();
             let mut requested_by = HashSet::new();
             requested_by.insert(workflow_id);
@@ -125,6 +135,13 @@ impl BuildQueueState {
             }
             self.drv_to_node.insert(d.drv_path.clone(), idx);
         }
+
+        // Track pending jobs for this workflow (new jobs + duplicate jobs that aren't done)
+        let total_pending = new_jobs_count + duplicate_pending_jobs;
+        if total_pending > 0 {
+            *self.pending_workflows.entry(workflow_id).or_insert(0) += total_pending;
+        }
+
         // Add edges
         for d in derivations {
             let to_idx = self.drv_to_node.get(&d.drv_path).unwrap();
@@ -135,25 +152,45 @@ impl BuildQueueState {
                 }
             }
         }
-        self.dag.transitive_reduce(roots.clone());
+        //self.dag.transitive_reduce(roots.clone());
         self.ready.extend(roots.into_iter());
+
+        // Workflow is complete if there are no pending jobs
+        total_pending == 0
     }
-    fn update_status(&mut self, drv_path: &str, status: BuildStatus) {
-        let Some(id) = self.drv_to_node.get(drv_path) else {
-            return;
+    fn update_status(&mut self, drv_path: &str, status: BuildStatus) -> Vec<i64> {
+        let Some(&id) = self.drv_to_node.get(drv_path) else {
+            return Vec::new();
         };
+
         if status.error() {
-            self.propagate_error(*id, status);
+            self.propagate_error(id, status)
         } else if status.done() {
-            self.propagate_success(*id, status);
+            self.propagate_success(id, status)
         } else {
-            let job = self.dag.node_weight_mut(*id).unwrap();
+            let job = self.dag.node_weight_mut(id).unwrap();
             job.status = status;
+            Vec::new()
         }
     }
-    fn propagate_error(&mut self, id: NodeIndex, status: BuildStatus) {
+    fn propagate_error(&mut self, id: NodeIndex, status: BuildStatus) -> Vec<i64> {
+        let mut completed_workflows = Vec::new();
+
         let job = self.dag.node_weight_mut(id).unwrap();
         job.status = status;
+
+        // Decrement workflow counters for this job
+        let requested_by = job.requested_by.clone();
+        for workflow_id in requested_by {
+            if let Some(count) = self.pending_workflows.get_mut(&workflow_id) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    completed_workflows.push(workflow_id);
+                    self.pending_workflows.remove(&workflow_id);
+                }
+            }
+        }
+
         let mut walker = self.dag.parents(id);
         while let Some((e, _)) = walker.walk_next(&self.dag) {
             self.dag.remove_edge(e);
@@ -161,12 +198,30 @@ impl BuildQueueState {
         let mut walker = self.dag.children(id);
         while let Some((_, n)) = walker.walk_next(&self.dag) {
             self.ready.push(n);
-            self.propagate_error(n, status);
+            let child_completed = self.propagate_error(n, BuildStatus::Canceled);
+            completed_workflows.extend(child_completed);
         }
+
+        completed_workflows
     }
-    fn propagate_success(&mut self, id: NodeIndex, status: BuildStatus) {
+    fn propagate_success(&mut self, id: NodeIndex, status: BuildStatus) -> Vec<i64> {
+        let mut completed_workflows = Vec::new();
+
         let job = self.dag.node_weight_mut(id).unwrap();
         job.status = status;
+
+        // Decrement workflow counters for this job
+        let requested_by = job.requested_by.clone();
+        for workflow_id in requested_by {
+            if let Some(count) = self.pending_workflows.get_mut(&workflow_id) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    completed_workflows.push(workflow_id);
+                    self.pending_workflows.remove(&workflow_id);
+                }
+            }
+        }
+
         let mut walker = self.dag.children(id);
         while let Some((e, n)) = walker.walk_next(&self.dag) {
             self.dag.remove_edge(e);
@@ -177,6 +232,8 @@ impl BuildQueueState {
                 self.ready.push(n);
             }
         }
+
+        completed_workflows
     }
     fn clear_workflow(&mut self, workflow_id: i64) {
         for (d, i) in self.drv_to_node.clone().into_iter() {
@@ -198,12 +255,14 @@ impl BuildQueue {
     }
 
     /// Add a batch of derivations from a workflow
-    pub fn add_workflow(&self, derivations: Vec<Derivation>, workflow_id: i64) {
+    /// Returns true if the workflow is already complete (all jobs are done)
+    pub fn add_workflow(&self, derivations: Vec<Derivation>, workflow_id: i64) -> bool {
         let mut state = self.state.lock().unwrap();
-        state.add_jobs(derivations, workflow_id);
+        let is_complete = state.add_jobs(derivations, workflow_id);
         if !state.ready.is_empty() {
             self.ready_signal.notify_one();
         }
+        is_complete
     }
     pub async fn wait_for_ready_jobs(&self) {
         self.ready_signal.notified().await;
@@ -221,12 +280,14 @@ impl BuildQueue {
     }
 
     /// Mark a job as done
-    pub fn update_status(&self, drv_path: &str, status: BuildStatus) {
+    /// Returns list of workflow IDs that just completed (all their jobs are done)
+    pub fn update_status(&self, drv_path: &str, status: BuildStatus) -> Vec<i64> {
         let mut state = self.state.lock().unwrap();
-        state.update_status(drv_path, status);
+        let completed_workflows = state.update_status(drv_path, status);
         if !state.ready.is_empty() {
             self.ready_signal.notify_one();
         }
+        completed_workflows
     }
 
     /// Remove a workflow's jobs from the queue
@@ -235,8 +296,20 @@ impl BuildQueue {
         state.clear_workflow(workflow_id);
     }
 
+    /// Get all jobs for a workflow (for detailed reporting and dashboard display)
+    pub fn get_workflow_jobs(&self, workflow_id: i64) -> Vec<BuildJob> {
+        let state = self.state.lock().unwrap();
+        state
+            .dag
+            .graph()
+            .node_weights()
+            .filter(|job| job.requested_by.contains(&workflow_id))
+            .cloned()
+            .collect()
+    }
+
     pub fn get_jobs(&self) -> Vec<BuildJob> {
-        let mut state = self.state.lock().unwrap();
-        state.dag.node_weights_mut().map(|n| n.clone()).collect()
+        let state = self.state.lock().unwrap();
+        state.dag.graph().node_weights().cloned().collect()
     }
 }

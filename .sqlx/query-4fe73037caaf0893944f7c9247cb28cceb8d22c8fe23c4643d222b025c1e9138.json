@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            UPDATE workflows SET status = ? WHERE id = ?\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "4fe73037caaf0893944f7c9247cb28cceb8d22c8fe23c4643d222b025c1e9138"
+}
